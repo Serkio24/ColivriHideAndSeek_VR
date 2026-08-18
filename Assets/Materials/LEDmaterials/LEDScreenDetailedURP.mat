@@ -8,7 +8,8 @@ Material:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_Name: LEDScreenDetailedURP
-  m_Shader: {fileID: -6465566751694194690, guid: e7cea1252f1974843b14167ae6777494, type: 3}
+  m_Shader: {fileID: -6465566751694194690, guid: e7cea1252f1974843b14167ae6777494,
+    type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords:
@@ -19,7 +20,8 @@ Material:
   m_DoubleSidedGI: 0
   m_CustomRenderQueue: -1
   stringTagMap: {}
-  disabledShaderPasses: []
+  disabledShaderPasses:
+  - MOTIONVECTORS
   m_LockedProperties: 
   m_SavedProperties:
     serializedVersion: 3
@@ -101,11 +103,13 @@ Material:
     - _QueueOffset: 0
     - _UV: 0
     m_Colors:
-    - Color_941038397df743edb971942aa6a65b41: {r: 1.4980392, g: 1.4980392, b: 1.4980392, a: 0}
+    - Color_941038397df743edb971942aa6a65b41: {r: 1.4980392, g: 1.4980392, b: 1.4980392,
+        a: 0}
     - Color_B7810F92: {r: 0.8627451, g: 1.6, b: 4, a: 0}
     - Vector2_ae16db7065034506a055993c41bbe614: {r: 0, g: 0, b: 0, a: 0}
     - Vector2_ea01576358e3410993f3b88f3d7e3a6b: {r: 50, g: 50, b: 0, a: 0}
   m_BuildTextureStacks: []
+  m_AllowLocking: 1
 --- !u!114 &3643184218438530441
 MonoBehaviour:
   m_ObjectHideFlags: 11
@@ -118,4 +122,4 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d0353a89b1f911e48b9e16bdc9f2e058, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  version: 7
+  version: 10
