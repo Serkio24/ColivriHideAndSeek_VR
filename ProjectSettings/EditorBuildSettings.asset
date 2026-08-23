@@ -8,18 +8,15 @@ EditorBuildSettings:
   - enabled: 0
     path: Assets/Scenes/SampleScene.unity
     guid: 9fc0d4010bbf28b4594072e72b8655ab
-  - enabled: 1
+  - enabled: 0
     path: Assets/Scenes/MainModel/RegistrationScene.unity
     guid: cb319c479fb7ea140b30605edbe21819
-  - enabled: 1
+  - enabled: 0
     path: Assets/Scenes/MainModel/TutorialScene.unity
     guid: b9ff16f382def514a9d04367a862f507
-  - enabled: 1
+  - enabled: 0
     path: Assets/Scenes/MainModel/MainModel.unity
     guid: a86671cb9facb0c46aa0a021640e3e0e
-  - enabled: 0
-    path: Assets/Scenes/MainModel/MenuPrincipal.unity
-    guid: b635d732dea14f34db5c763863730a04
   - enabled: 1
     path: Assets/Scenes/MainModel/MainModel_Env.unity
     guid: 0248fde163f97a4459dcea0fdedffab9

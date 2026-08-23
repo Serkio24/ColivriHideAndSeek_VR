@@ -18,6 +18,27 @@
 
 
 > **ColivriDigitalTwin_VR** es una demo de pistas en realidad virtual (VR) localizado en el laboratorio COLIVRI. El/la jugador(a) registra su nombre, elige dificultad (Fácil, Normal o Competitivo), y resuelve una clave de 3 dígitos a través de pistas escondidas en todo el laboratorio. El sistema registra el tiempo, actualiza el leaderboard (Top 10), y muestra estadísticas al finalizar.
+
+---
+
+> [!IMPORTANT]
+> ## Este repositorio tiene ahora DOS juegos
+>
+> | | Modo pistas (original) | Modo escondidas (nuevo) |
+> |---|---|---|
+> | Jugadores | 1 | Hasta 4, online |
+> | Escena | `Assets/Scenes/MainModel/MainModel.unity` | `Assets/Scenes/MainModel/MainModel_Env.unity` |
+> | En el build | No (deshabilitada) | **Sí, es la única escena habilitada** |
+> | Documentación | Este README | **[HIDE_AND_SEEK.md](HIDE_AND_SEEK.md)** |
+>
+> El resto de este README describe el **modo pistas single-player**. Su código sigue intacto en
+> `Assets/Scripts/`, pero **no se ejecuta en el build actual**: la escena que arranca es la de
+> escondidas. Para volver al modo pistas hay que rehabilitar `MainModel.unity` en
+> *File → Build Settings*.
+>
+> Ten en cuenta que las secciones de *Tecnologías utilizadas* y *Requisitos* de abajo están
+> desactualizadas: el proyecto usa hoy **Unity 6.3 (6000.3.10f1)**, no 2022.3.
+
 ---
 
 ## Tabla de contenidos
