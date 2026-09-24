@@ -5,7 +5,7 @@ namespace Colivri.HideAndSeek
 {
     /// <summary>
     /// Controla el rig VR local: escala segun el rol, teletransporte forzado por el servidor,
-    /// venda en los ojos del buscador durante la fase de escondite y equipar/quitar la pistola.
+    /// bloqueo de la locomocion del buscador durante la fase de escondite y equipar/quitar la pistola.
     ///
     /// Va en un GameObject vacio ("PlayerRoot") que es el padre de OVRCameraRigInteraction.
     /// Se escala ese padre y no el propio OVRCameraRig porque el PlayerLocomotor de ISDK
@@ -25,7 +25,7 @@ namespace Colivri.HideAndSeek
         [SerializeField] private Transform rightHand;
         [SerializeField] private Camera centerEyeCamera;
 
-        [Tooltip("Grupos de interactores de locomocion que se apagan mientras el buscador esta cegado. " +
+        [Tooltip("Grupos de interactores de locomocion que se apagan mientras el buscador espera a que los demas se escondan. " +
                  "Si se deja vacio se buscan por nombre.")]
         [SerializeField] private GameObject[] locomotionInteractors;
 
@@ -50,7 +50,6 @@ namespace Colivri.HideAndSeek
         public float CurrentScale { get; private set; } = 1f;
 
         private float _baseNearClip = 0.1f;
-        private GameObject _blindfold;
         private GameObject _gunInstance;
 
         private void Awake()
@@ -63,8 +62,7 @@ namespace Colivri.HideAndSeek
                 _baseNearClip = centerEyeCamera.nearClipPlane;
             }
 
-            CreateBlindfold();
-            SetBlindfolded(false);
+            SetLocomotionEnabled(true);
         }
 
         private void OnDestroy()
@@ -130,11 +128,31 @@ namespace Colivri.HideAndSeek
         /// <summary>
         /// Escala el rig entero. Tambien encoge el near clip plane: si no, un jugador pequeno
         /// ve recortada la geometria que tiene delante.
+        ///
+        /// La escala se aplica alrededor del punto del suelo bajo la cabeza, no del origen de
+        /// PlayerRoot. PlayerLocomotor mueve OVRCameraRig en coordenadas de mundo, asi que tras
+        /// unos cuantos teleports su offset respecto a PlayerRoot es grande; escalando sobre el
+        /// origen ese offset se multiplicaba y el jugador aparecia fuera del mapa al morir
+        /// (0,5 -> 1 duplica la distancia).
         /// </summary>
         public void ApplyScale(float scale)
         {
+            float previous = transform.localScale.x;
             CurrentScale = Mathf.Max(0.05f, scale);
-            transform.localScale = Vector3.one * CurrentScale;
+
+            if (!Mathf.Approximately(previous, CurrentScale) && previous > 0f)
+            {
+                Vector3 pivot = transform.position;
+                if (head != null && rigOrigin != null)
+                {
+                    pivot = new Vector3(head.position.x, rigOrigin.position.y, head.position.z);
+                }
+
+                transform.localScale = Vector3.one * CurrentScale;
+                // Con escala uniforme esto deja el pivote fijo en el mundo: el jugador crece o
+                // encoge en el sitio y con los pies en el mismo suelo.
+                transform.position = pivot + (transform.position - pivot) * (CurrentScale / previous);
+            }
 
             if (centerEyeCamera != null)
             {
@@ -171,18 +189,9 @@ namespace Colivri.HideAndSeek
             transform.position += delta;
         }
 
-        // ------------------------------------------------------------- ceguera
+        // ----------------------------------------------------------- locomocion
 
-        /// <summary>Tapa la vista del jugador y le quita la locomocion (fase de escondite del buscador).</summary>
-        public void SetBlindfolded(bool blindfolded)
-        {
-            if (_blindfold != null)
-            {
-                _blindfold.SetActive(blindfolded);
-            }
-            SetLocomotionEnabled(!blindfolded);
-        }
-
+        /// <summary>Enciende o apaga la locomocion (el buscador espera quieto mientras los demas se esconden).</summary>
         public void SetLocomotionEnabled(bool value)
         {
             if (locomotionInteractors == null) return;
@@ -190,27 +199,6 @@ namespace Colivri.HideAndSeek
             {
                 if (go != null) go.SetActive(value);
             }
-        }
-
-        private void CreateBlindfold()
-        {
-            if (head == null) return;
-
-            _blindfold = GameObject.CreatePrimitive(PrimitiveType.Quad);
-            _blindfold.name = "Blindfold";
-            Destroy(_blindfold.GetComponent<Collider>());
-
-            var t = _blindfold.transform;
-            t.SetParent(head, false);
-            // Justo por delante del near clip base para que tape todo el campo de vision.
-            t.localPosition = new Vector3(0f, 0f, _baseNearClip * 1.5f);
-            t.localRotation = Quaternion.identity;
-            t.localScale = Vector3.one * (_baseNearClip * 8f);
-
-            var meshRenderer = _blindfold.GetComponent<MeshRenderer>();
-            meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            meshRenderer.receiveShadows = false;
-            meshRenderer.sharedMaterial = HideAndSeekMaterials.CreateUnlit(Color.black);
         }
 
         // ------------------------------------------------------------- pistola

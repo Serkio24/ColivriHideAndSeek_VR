@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Meta.XR.MultiplayerBlocks.NGO;
 using Unity.Netcode;
 using UnityEngine;
 
@@ -27,8 +28,11 @@ namespace Colivri.HideAndSeek
         [SerializeField] private float roundOverDuration = 10f;
 
         [Header("Reglas")]
-        [Tooltip("Jugadores necesarios para arrancar una ronda.")]
+        [Tooltip("Jugadores necesarios para que el host pueda arrancar una ronda.")]
         [SerializeField] private int minPlayers = 2;
+        [Tooltip("Capacidad de la sala. Se sincroniza sola con AutoMatchmakingNGO.maxPlayersPerRoom " +
+                 "si hay matchmaking en la escena; este valor es solo el respaldo.")]
+        [SerializeField] private int maxPlayers = 4;
 
         [Header("Disparo")]
         [Tooltip("Alcance maximo del disparo, en metros.")]
@@ -80,6 +84,22 @@ namespace Colivri.HideAndSeek
 
         public int MinPlayers => minPlayers;
 
+        /// Capacidad de la sala, para el mensaje de espera del HUD.
+        public int MaxPlayers => maxPlayers;
+
+        /// Jugadores spawneados que ve este cliente.
+        public int PlayerCount => NetworkPlayer.All.Count;
+
+        /// True solo en la instancia que hace de host. En este montaje host y servidor son
+        /// el mismo proceso (AutoMatchmakingNGO llama a StartHost), asi que basta con IsServer.
+        /// El IsSpawned no sobra: IsServer es false hasta que el NetworkObject se spawnea y
+        /// el HUD pregunta cada frame desde mucho antes.
+        public bool IsLocalHost => IsSpawned && IsServer;
+
+        /// Si ahora mismo se puede arrancar una ronda.
+        public bool CanStartRound =>
+            State.Value == GameState.WaitingForPlayers && PlayerCount >= minPlayers;
+
         /// Segundos que quedan de la fase actual (0 si la fase no tiene cuenta atras).
         public float PhaseTimeRemaining
         {
@@ -96,6 +116,9 @@ namespace Colivri.HideAndSeek
 
         private readonly Dictionary<ulong, double> _lastShotTime = new Dictionary<ulong, double>();
 
+        /// Buscador de la ronda en curso (solo en el servidor), para llevarlo a su punto al empezar la busqueda.
+        private NetworkPlayer _seeker;
+
         // Cache para no reaplicar el estado local en cada frame.
         private GameState _appliedState = (GameState)255;
         private PlayerRole _appliedRole = (PlayerRole)255;
@@ -106,6 +129,14 @@ namespace Colivri.HideAndSeek
             if (spawnPoints == null)
             {
                 spawnPoints = FindAnyObjectByType<SpawnPointSet>();
+            }
+
+            // La capacidad real de la sala la fija el bloque de matchmaking al crear el lobby,
+            // asi que se lee de ahi en vez de mantener dos numeros que se pueden ir separando.
+            var matchmaking = FindAnyObjectByType<AutoMatchmakingNGO>(FindObjectsInactive.Include);
+            if (matchmaking != null && matchmaking.maxPlayersPerRoom > 0)
+            {
+                maxPlayers = matchmaking.maxPlayersPerRoom;
             }
         }
 
@@ -165,10 +196,8 @@ namespace Colivri.HideAndSeek
             switch (State.Value)
             {
                 case GameState.WaitingForPlayers:
-                    if (NetworkPlayer.All.Count >= minPlayers)
-                    {
-                        StartRound();
-                    }
+                    // A proposito no se arranca solo: la ronda la abre el host desde el boton
+                    // INICIAR de su HUD, que acaba llamando a RequestStartRound().
                     break;
 
                 case GameState.Hiding:
@@ -198,6 +227,18 @@ namespace Colivri.HideAndSeek
             }
         }
 
+        /// <summary>
+        /// El host pide arrancar la ronda desde su HUD. Como el host es tambien el servidor,
+        /// no hace falta ServerRpc: se valida y se ejecuta aqui mismo. Si esto lo llama un
+        /// cliente no consigue nada, igual que pasa con SetRole en NetworkPlayer.
+        /// </summary>
+        public void RequestStartRound()
+        {
+            if (!IsServer || !IsSpawned) return;
+            if (!CanStartRound) return;
+            StartRound();
+        }
+
         private void StartRound()
         {
             var players = new List<NetworkPlayer>(NetworkPlayer.All);
@@ -223,7 +264,8 @@ namespace Colivri.HideAndSeek
             HidersTotal.Value = hiders.Count;
             HidersAlive.Value = hiders.Count;
 
-            PlaceSeeker(players[seekerIndex]);
+            _seeker = players[seekerIndex];
+            PlaceSeekerWhileHiding(_seeker);
             PlaceHiders(hiders);
 
             double now = ServerNow;
@@ -234,12 +276,14 @@ namespace Colivri.HideAndSeek
 
         private void BeginSeeking(double now)
         {
+            PlaceSeeker(_seeker);
             PhaseEndServerTime.Value = now + seekDuration;
             State.Value = GameState.Seeking;
         }
 
         private void EndRound(bool seekerWon, double now)
         {
+            _seeker = null;
             SeekerWonLastRound.Value = seekerWon;
             PhaseEndServerTime.Value = now + roundOverDuration;
             State.Value = GameState.RoundOver;
@@ -285,6 +329,14 @@ namespace Colivri.HideAndSeek
         }
 
         // ------------------------------------------------------------- posiciones
+
+        /// Mientras los demas se esconden, el buscador espera en su punto de espera (sin moverse).
+        private void PlaceSeekerWhileHiding(NetworkPlayer seeker)
+        {
+            if (spawnPoints == null || seeker == null) return;
+            var point = spawnPoints.GetSeekerWaitPoint();
+            if (point != null) TeleportPlayer(seeker.OwnerClientId, point);
+        }
 
         private void PlaceSeeker(NetworkPlayer seeker)
         {
@@ -402,9 +454,9 @@ namespace Colivri.HideAndSeek
         // -------------------------------------------------------- estado local
 
         /// <summary>
-        /// Traduce el estado de red a efectos locales: venda en los ojos y bloqueo de la
-        /// locomocion del buscador mientras los demas se esconden. Se recalcula cada frame
-        /// pero solo se aplica cuando algo cambia.
+        /// Traduce el estado de red a efectos locales: bloqueo de la locomocion del buscador
+        /// mientras los demas se esconden (espera quieto en su punto de espera, viendo). Se
+        /// recalcula cada frame pero solo se aplica cuando algo cambia.
         /// </summary>
         private void RefreshLocalPlayer()
         {
@@ -418,8 +470,8 @@ namespace Colivri.HideAndSeek
             _appliedState = state;
             _appliedRole = role;
 
-            bool blindfolded = state == GameState.Hiding && role == PlayerRole.Seeker;
-            rig.SetBlindfolded(blindfolded);
+            bool waiting = state == GameState.Hiding && role == PlayerRole.Seeker;
+            rig.SetLocomotionEnabled(!waiting);
         }
     }
 }

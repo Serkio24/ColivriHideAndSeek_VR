@@ -17,7 +17,11 @@ namespace Colivri.HideAndSeek
         [Tooltip("Punto donde aparece el buscador. Si es null se usa uno cualquiera del conjunto.")]
         [SerializeField] private Transform seekerPoint;
 
+        [Tooltip("Donde espera el buscador mientras los demas se esconden. Si es null, espera en el punto del buscador.")]
+        [SerializeField] private Transform seekerWaitPoint;
+
         public Transform SeekerPoint => seekerPoint;
+        public Transform SeekerWaitPoint => seekerWaitPoint;
 
         public int Count => ResolvedPoints.Count;
 
@@ -30,7 +34,7 @@ namespace Colivri.HideAndSeek
                 {
                     foreach (Transform child in transform)
                     {
-                        if (child != seekerPoint) points.Add(child);
+                        if (child != seekerPoint && child != seekerWaitPoint) points.Add(child);
                     }
                 }
                 return points;
@@ -72,13 +76,21 @@ namespace Colivri.HideAndSeek
             return any.Count > 0 ? any[0] : transform;
         }
 
+        /// <summary>Donde espera el buscador durante la fase de escondite; su punto normal si no se configuro.</summary>
+        public Transform GetSeekerWaitPoint()
+        {
+            return seekerWaitPoint != null ? seekerWaitPoint : GetSeekerPoint();
+        }
+
 #if UNITY_EDITOR
         private void OnDrawGizmos()
         {
             foreach (Transform child in transform)
             {
                 if (child == null) continue;
-                Gizmos.color = child == seekerPoint ? Color.red : Color.cyan;
+                Gizmos.color = child == seekerPoint ? Color.red
+                    : child == seekerWaitPoint ? Color.yellow
+                    : Color.cyan;
                 Gizmos.DrawWireSphere(child.position + Vector3.up * 0.9f, 0.25f);
                 Gizmos.DrawLine(child.position, child.position + child.forward * 0.6f);
             }

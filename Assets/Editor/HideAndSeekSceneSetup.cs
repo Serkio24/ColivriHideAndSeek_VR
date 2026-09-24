@@ -32,6 +32,124 @@ namespace Colivri.HideAndSeek.EditorTools
         private const string ManagerName = "[HideAndSeek] Manager";
         private const string SpawnPointsName = "[HideAndSeek] SpawnPoints";
         private const string HudName = "[HideAndSeek] HUD";
+        /// Hijo de SpawnPoints, colocado a mano, donde espera el buscador mientras los demas se esconden.
+        private const string SeekerWaitPointName = "Spawn_Buscador_WhenHiding";
+
+        // --- Modelos de los avatares ---
+        private const string HeadPivotName = "HeadPivot";
+        private const string SeekerGunVisualName = "SeekerGunVisual";
+        /// Mismo offset que PlayerRig.gunLocalPosition/Euler en la escena: los demas ven la pistola
+        /// justo donde la tiene el buscador en su propia mano.
+        private static readonly Vector3 GunLocalPosition = new Vector3(0f, -0.02f, 0.03f);
+        private static readonly Vector3 GunLocalEuler = Vector3.zero;
+
+        /// <summary>Todo lo que distingue el montaje de un robot del de otro.</summary>
+        private sealed class RobotAvatarSpec
+        {
+            public string Label;
+            public string ModelPath;
+            /// Hijo de BodyPivot que se crea para alojar el robot.
+            public string VisualName;
+            /// Nodo cuyo subarbol gira con el casco (la cabeza y lo que lleva montado).
+            public string HeadSubtreeNode;
+            /// Malla de la cabeza. Su centro se alinea con la raiz del avatar (el ojo) y hace de pivote.
+            public string HeadMeshNode;
+            /// Prefijos de los links de brazo, que se borran: no hay IK que los mueva y quedarian
+            /// tiesos al lado de unas manos que si siguen a los mandos.
+            public string[] ArmPrefixes;
+            /// Nodos sueltos en la raiz del GLB que van montados en la cabeza (luces, adornos).
+            /// Se cuelgan del pivote de la cabeza para que giren con el casco. null = ninguno.
+            public string[] HeadExtraNodes;
+            /// Distancia del centro de la cabeza a los pies, en metros. La raiz del avatar esta a la
+            /// altura real de los ojos, asi que con esto los pies caen aproximadamente en el suelo.
+            public float EyeHeight;
+            /// Giro sobre Y para que el robot mire hacia donde mira el jugador. Los GLB vienen de
+            /// URDF y GLTFUtility invierte X al importar: acaban mirando a -X, asi que hay que
+            /// girarlos 90 grados para alinearlos con el "adelante" de Unity (+Z).
+            public float YawOffset;
+            /// Campos de NetworkPlayer donde se enchufan la raiz del robot y el pivote de la cabeza.
+            public string VisualField;
+            public string HeadField;
+
+            /// Nodos del GLB que se copian como mano bajo HandL/HandR del avatar. null = no hay mano
+            /// de robot en ese lado (el buscador lleva la pistola en la derecha).
+            public string HandNodeLeft;
+            public string HandNodeRight;
+            /// Nodos cuya posicion hace de articulacion al medir el eje de cada mano. null = el
+            /// propio nodo de la mano. Hace falta cuando el origen de la mano no esta en la muneca.
+            public string HandJointNodeLeft;
+            public string HandJointNodeRight;
+            /// Si en la mano derecha va la pistola en vez de una mano del robot.
+            public bool GunInRightHand;
+            /// Hijo de HandL/HandR que aloja la copia de la mano.
+            public string HandVisualName;
+            /// Punto de la malla, a lo largo de su eje, que cae en el agarre del mando
+            /// (0 = en la articulacion, 1 = en la punta).
+            public float HandGripFraction;
+            /// Giro extra tras alinear la malla con el "adelante" del mando, para corregir el ladeo.
+            public Vector3 HandEuler;
+            /// Campos de NetworkPlayer donde se enchufan las manos (o la pistola).
+            public string HandLeftField;
+            public string HandRightField;
+        }
+
+        private static readonly RobotAvatarSpec SeekerAvatar = new RobotAvatarSpec
+        {
+            Label = "buscador",
+            ModelPath = "Assets/Models/RobotsColivri/AuraConManosyluces.glb",
+            VisualName = "SeekerVisual",
+            // head_joint tiene traslacion cero (su pivote es el origen del modelo), por eso se
+            // inserta un pivote propio en vez de rotar el nodo directamente.
+            HeadSubtreeNode = "head_joint.fixed.bone",
+            HeadMeshNode = "head_link",
+            // Las manos (Sketchfab_model y Sketchfab_model.001) cuelgan de la raiz del GLB y no del
+            // brazo: sin brazos se quedarian flotando junto al cuerpo, asi que tambien se quitan.
+            ArmPrefixes = new[] { "left_shoulder", "right_shoulder", "left_elbow", "right_elbow", "Sketchfab_model" },
+            // Luces de la cabeza, tambien sueltas en la raiz del GLB.
+            HeadExtraNodes = new[] { "Curva_Bezier", "Curva_Bezier.001" },
+            EyeHeight = 1.61f,
+            YawOffset = 90f,
+            VisualField = "seekerVisual",
+            HeadField = "seekerHead",
+            // Sketchfab_model es la mano izquierda (la .001 es la derecha, que lleva la pistola).
+            // Su origen queda por encima de la malla, asi que el eje se mide desde el antebrazo.
+            HandNodeLeft = "Sketchfab_model",
+            HandNodeRight = null,
+            HandJointNodeLeft = "left_elbow_roll_link",
+            GunInRightHand = true,
+            HandVisualName = "SeekerHandVisual",
+            HandGripFraction = 0.35f,
+            // En el GLB la mano va plana con el pulgar hacia fuera; asi queda de canto, pulgar
+            // arriba, como agarrando el mando.
+            HandEuler = new Vector3(0f, 0f, -90f),
+            HandLeftField = "seekerHandLeft",
+            HandRightField = "seekerHandRight",
+        };
+
+        private static readonly RobotAvatarSpec HiderAvatar = new RobotAvatarSpec
+        {
+            Label = "escondido",
+            ModelPath = "Assets/Models/RobotsColivri/NaoRobot.glb",
+            VisualName = "HiderVisual",
+            // HeadPitch lleva la malla Head y los sensores; Neck se queda quieto en HeadYaw.
+            HeadSubtreeNode = "HeadPitch.revolute.bone",
+            HeadMeshNode = "Head",
+            ArmPrefixes = new[] { "LShoulderPitch", "RShoulderPitch" },
+            // La del buscador por hiderScale (0,5) de PlayerRig: el escondido ve el mundo a esa altura.
+            EyeHeight = 0.805f,
+            YawOffset = 90f,
+            VisualField = "hiderVisual",
+            HeadField = "hiderHead",
+            // La malla l_wrist/r_wrist es la mano entera (muneca y dedos).
+            HandNodeLeft = "LWristYaw.revolute.bone",
+            HandNodeRight = "RWristYaw.revolute.bone",
+            GunInRightHand = false,
+            HandVisualName = "HiderHandVisual",
+            HandGripFraction = 0.5f,
+            HandEuler = Vector3.zero,
+            HandLeftField = "hiderHandLeft",
+            HandRightField = "hiderHandRight",
+        };
 
         // --- Sondeo de la geometria para colocar los puntos de aparicion ---
         private const float ProbeMinX = -4f, ProbeMaxX = 18f, ProbeMinZ = -12f, ProbeMaxZ = 12f;
@@ -43,12 +161,6 @@ namespace Colivri.HideAndSeek.EditorTools
         private const float PlayerHeight = 1.8f, PlayerRadius = 0.3f;
         private const float MinSpawnSeparation = 3f;
         private const int MaxSpawnPoints = 12;
-
-        // --- Plataforma que marca cada punto de aparicion ---
-        private const float PadSize = 1.1f;
-        private const float PadThickness = 0.05f;
-        private const string SeekerPadMaterialPath = "Assets/Prefabs/HideAndSeek/SpawnPadSeeker.mat";
-        private const string HiderPadMaterialPath = "Assets/Prefabs/HideAndSeek/SpawnPadHider.mat";
 
         [MenuItem("Colivri/Hide and Seek/Configurar escena")]
         public static void Setup()
@@ -326,10 +438,25 @@ namespace Colivri.HideAndSeek.EditorTools
             if (host == null) host = new GameObject(SpawnPointsName);
             var set = GetOrAdd<SpawnPointSet>(host);
 
+            // El punto de espera del buscador lo coloca el usuario a mano, asi que sobrevive.
+            var waitPoint = set.SeekerWaitPoint != null
+                ? set.SeekerWaitPoint
+                : host.transform.Find(SeekerWaitPointName);
+
             // Este metodo es la fuente de verdad: se rehacen todos los puntos desde cero.
             for (int i = host.transform.childCount - 1; i >= 0; i--)
             {
-                Object.DestroyImmediate(host.transform.GetChild(i).gameObject);
+                var child = host.transform.GetChild(i);
+                if (child == waitPoint) continue;
+                Object.DestroyImmediate(child.gameObject);
+            }
+
+            var waitSo = new SerializedObject(set);
+            waitSo.FindProperty("seekerWaitPoint").objectReferenceValue = waitPoint;
+            waitSo.ApplyModifiedPropertiesWithoutUndo();
+            if (waitPoint == null)
+            {
+                Debug.LogWarning($"[HideAndSeek] No hay '{SeekerWaitPointName}': el buscador esperara en su punto normal.");
             }
 
             float groundY = FindGroundFloorY();
@@ -379,59 +506,12 @@ namespace Colivri.HideAndSeek.EditorTools
                 so.ApplyModifiedPropertiesWithoutUndo();
             }
 
-            // Marca visible en el suelo, una vez ya se sabe cual es el punto del buscador.
-            foreach (Transform point in host.transform)
-            {
-                CreatePad(point, point == seekerPoint);
-            }
-
+            // Sin marca visible en el suelo: los puntos son transforms vacios. En el editor los
+            // siguen dibujando los gizmos de SpawnPointSet.
             EditorUtility.SetDirty(host);
             Debug.Log($"[HideAndSeek] {chosen.Count} puntos colocados en la planta baja (y={groundY:F2}), " +
                       $"separados al menos {MinSpawnSeparation} m.");
             return set;
-        }
-
-        /// <summary>
-        /// Plataforma plana que marca un punto de aparicion en el suelo.
-        ///
-        /// Va SIN collider a proposito. Si lo tuviera, el sondeo de <see cref="HasGroundAt"/> la
-        /// detectaria como suelo al regenerar los puntos y estos subirian el grosor de la plataforma
-        /// en cada pasada; ademas taparia disparos rasantes. Es solo un adorno.
-        /// </summary>
-        private static void CreatePad(Transform point, bool isSeekerPad)
-        {
-            var pad = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            pad.name = "Plataforma";
-            Object.DestroyImmediate(pad.GetComponent<Collider>());
-
-            pad.transform.SetParent(point, false);
-            // Ligeramente despegada del suelo para que la cara inferior no haga z-fighting con el.
-            pad.transform.localPosition = new Vector3(0f, PadThickness * 0.5f + 0.005f, 0f);
-            pad.transform.localRotation = Quaternion.identity;
-            pad.transform.localScale = new Vector3(PadSize, PadThickness, PadSize);
-
-            var renderer = pad.GetComponent<MeshRenderer>();
-            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            renderer.receiveShadows = false;
-            renderer.sharedMaterial = isSeekerPad
-                ? GetOrCreateMaterial(SeekerPadMaterialPath, new Color(0.85f, 0.25f, 0.18f))
-                : GetOrCreateMaterial(HiderPadMaterialPath, new Color(0.20f, 0.60f, 0.85f));
-        }
-
-        /// <summary>Material compartido en disco, para no crear uno por plataforma.</summary>
-        private static Material GetOrCreateMaterial(string path, Color color)
-        {
-            var existing = AssetDatabase.LoadAssetAtPath<Material>(path);
-            if (existing != null)
-            {
-                HideAndSeekMaterials.Tint(existing, color);
-                EditorUtility.SetDirty(existing);
-                return existing;
-            }
-
-            var material = HideAndSeekMaterials.CreateLit(color);
-            AssetDatabase.CreateAsset(material, path);
-            return material;
         }
 
         /// <summary>
@@ -689,6 +769,379 @@ namespace Colivri.HideAndSeek.EditorTools
             label.color = Color.white;
             label.text = name;
             return label;
+        }
+
+        // ------------------------------------------------- 7. avatares robot
+
+        /// <summary>Mete el Aura (con manos y luces) dentro de NetworkPlayer.prefab como aspecto del buscador.</summary>
+        [MenuItem("Colivri/Hide and Seek/Configurar avatar del buscador")]
+        public static void SetupSeekerAvatar() => MountRobotAvatar(SeekerAvatar);
+
+        /// <summary>Mete el NaoRobot dentro de NetworkPlayer.prefab como aspecto de los escondidos.</summary>
+        [MenuItem("Colivri/Hide and Seek/Configurar avatar del escondido")]
+        public static void SetupHiderAvatar() => MountRobotAvatar(HiderAvatar);
+
+        /// <summary>
+        /// Monta un robot dentro de NetworkPlayer.prefab.
+        ///
+        /// Va en un menu aparte y no dentro de <see cref="Setup"/> porque toca el prefab y no la
+        /// escena: no necesita tener abierta MainModel_Env ni rehacer los puntos de aparicion.
+        /// Es idempotente: rehace el hijo del robot desde cero en cada pasada.
+        /// </summary>
+        private static void MountRobotAvatar(RobotAvatarSpec spec)
+        {
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(spec.ModelPath);
+            if (model == null)
+            {
+                Debug.LogError($"[HideAndSeek] Falta {spec.ModelPath}.");
+                return;
+            }
+
+            var root = PrefabUtility.LoadPrefabContents(PlayerPrefabPath);
+            if (root == null)
+            {
+                Debug.LogError($"[HideAndSeek] No se pudo abrir {PlayerPrefabPath}.");
+                return;
+            }
+
+            try
+            {
+                var player = root.GetComponent<NetworkPlayer>();
+                var pivot = root.transform.Find("BodyPivot");
+                if (player == null || pivot == null)
+                {
+                    Debug.LogError("[HideAndSeek] El prefab del avatar no tiene NetworkPlayer o BodyPivot.");
+                    return;
+                }
+
+                // Este metodo es la fuente de verdad del modelo: se rehace entero.
+                var previous = pivot.Find(spec.VisualName);
+                if (previous != null) Object.DestroyImmediate(previous.gameObject);
+
+                // Cuelga de BodyPivot y no de la raiz para que solo herede el giro horizontal:
+                // si colgase de la raiz, el robot se inclinaria entero al mirar al suelo. La
+                // inclinacion la recibe solo la cabeza, a traves de HeadPivot.
+                var host = new GameObject(spec.VisualName);
+                host.transform.SetParent(pivot, false);
+                host.transform.localPosition = Vector3.zero;
+                host.transform.localRotation = Quaternion.Euler(0f, spec.YawOffset, 0f);
+                host.transform.localScale = Vector3.one;
+
+                var instance = (GameObject)PrefabUtility.InstantiatePrefab(model, host.transform);
+                // Se desempaqueta a proposito: hace falta poder borrar los nodos de los brazos.
+                // El precio es que reimportar el GLB ya no propaga; se vuelve a ejecutar este menu.
+                PrefabUtility.UnpackPrefabInstance(instance, PrefabUnpackMode.Completely,
+                    InteractionMode.AutomatedAction);
+                instance.transform.localPosition = Vector3.zero;
+                instance.transform.localRotation = Quaternion.identity;
+                instance.transform.localScale = Vector3.one;
+
+                int arms = RemoveArms(instance, spec.ArmPrefixes);
+                Debug.Log($"[HideAndSeek] Quitados {arms} link(s) de brazo del robot del {spec.Label}.");
+
+                if (!TryMeasureModel(host.transform, instance.transform, out Bounds whole))
+                {
+                    Debug.LogError($"[HideAndSeek] El modelo del {spec.Label} no tiene mallas que medir.");
+                    return;
+                }
+
+                var headMesh = FindDescendant(instance.transform, spec.HeadMeshNode);
+                if (headMesh == null || !TryMeasureModel(host.transform, headMesh, out Bounds headBounds))
+                {
+                    Debug.LogError($"[HideAndSeek] No se encontro el nodo '{spec.HeadMeshNode}' del robot.");
+                    return;
+                }
+
+                var headSubtree = FindDescendant(instance.transform, spec.HeadSubtreeNode);
+                if (headSubtree == null || headSubtree.parent == null)
+                {
+                    Debug.LogError($"[HideAndSeek] No se encontro el nodo '{spec.HeadSubtreeNode}' del robot.");
+                    return;
+                }
+
+                // Escala por medida real y no por una constante: si el GLB cambia de unidades,
+                // esto sigue dando un robot de la altura pedida. Se mide del centro de la cabeza a
+                // los pies y no el alto total: el Nao es cabezon y por alto total flotaria.
+                float eyeToFeet = headBounds.center.y - whole.min.y;
+                float scale = spec.EyeHeight / eyeToFeet;
+                host.transform.localScale = Vector3.one * scale;
+                // La cabeza del robot acaba donde esta el collider de impacto de la cabeza (y = 0
+                // en local), asi que disparar a lo que se ve es disparar al collider.
+                host.transform.localPosition = new Vector3(0f, -headBounds.center.y * scale, 0f);
+
+                // Pivote propio en el centro de la cabeza: los nodos del GLB no sirven de pivote
+                // (el head_joint del Aura esta en el origen del modelo y la haria orbitar alrededor
+                // de la pelvis). En runtime NetworkPlayer copia aqui la rotacion del casco.
+                var headPivot = new GameObject(HeadPivotName).transform;
+                headPivot.SetParent(headSubtree.parent, false);
+                headPivot.SetPositionAndRotation(host.transform.TransformPoint(headBounds.center),
+                    host.transform.rotation);
+                headSubtree.SetParent(headPivot, true);
+
+                if (spec.HeadExtraNodes != null)
+                {
+                    foreach (var extraName in spec.HeadExtraNodes)
+                    {
+                        var extra = FindDescendant(instance.transform, extraName);
+                        if (extra == null)
+                        {
+                            Debug.LogError($"[HideAndSeek] No se encontro el nodo '{extraName}' de la cabeza del robot.");
+                            return;
+                        }
+                        extra.SetParent(headPivot, true);
+                    }
+                }
+
+                var so = new SerializedObject(player);
+                so.FindProperty(spec.VisualField).objectReferenceValue = host;
+                so.FindProperty(spec.HeadField).objectReferenceValue = headPivot;
+                so.ApplyModifiedPropertiesWithoutUndo();
+
+                MountRobotHands(spec, model, root, player, scale);
+
+                PrefabUtility.SaveAsPrefabAsset(root, PlayerPrefabPath);
+
+                Debug.Log($"[HideAndSeek] Robot del {spec.Label} montado: {whole.size.y:F2} u de alto en el " +
+                          $"GLB, escala {scale:F4} para {spec.EyeHeight:F2} m de ojos a pies " +
+                          $"({whole.size.y * scale:F2} m de alto). " +
+                          $"Cabeza en y={headBounds.center.y * scale:F2} -> offset {host.transform.localPosition.y:F2}. " +
+                          $"Pies en y={(whole.min.y * scale) + host.transform.localPosition.y:F2}.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(root);
+            }
+        }
+
+        /// <summary>
+        /// Monta las manos del robot (y la pistola del buscador) bajo HandL/HandR del avatar, que
+        /// son los anchors que siguen a los mandos por NetworkTransform. Sustituyen a los cubos,
+        /// que se quedan solo para espectadores y jugadores sin rol.
+        /// </summary>
+        private static void MountRobotHands(RobotAvatarSpec spec, GameObject model, GameObject root,
+                                            NetworkPlayer player, float scale)
+        {
+            var handL = root.transform.Find("HandL");
+            var handR = root.transform.Find("HandR");
+            if (handL == null || handR == null)
+            {
+                Debug.LogError("[HideAndSeek] El prefab del avatar no tiene HandL o HandR.");
+                return;
+            }
+
+            var so = new SerializedObject(player);
+
+            so.FindProperty(spec.HandLeftField).objectReferenceValue =
+                MountHand(spec, model, handL, spec.HandNodeLeft, spec.HandJointNodeLeft, scale);
+
+            GameObject right = null;
+            if (spec.GunInRightHand)
+            {
+                right = MountGun(handR);
+            }
+            else if (spec.HandNodeRight != null)
+            {
+                right = MountHand(spec, model, handR, spec.HandNodeRight, spec.HandJointNodeRight, scale);
+            }
+            so.FindProperty(spec.HandRightField).objectReferenceValue = right;
+
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>
+        /// Copia el subarbol <paramref name="nodeName"/> del GLB bajo <paramref name="anchor"/>.
+        ///
+        /// Sale de una copia nueva del modelo porque la del cuerpo ya tiene los brazos borrados.
+        /// Se orienta midiendo, no con angulos a mano: el eje de la malla es hacia donde cuelga
+        /// desde su articulacion, y se alinea con el "adelante" del mando (+Z del anchor). La
+        /// articulacion es <paramref name="jointNodeName"/> si se da, y si no el propio nodo.
+        /// </summary>
+        private static GameObject MountHand(RobotAvatarSpec spec, GameObject model, Transform anchor,
+                                            string nodeName, string jointNodeName, float scale)
+        {
+            if (string.IsNullOrEmpty(nodeName)) return null;
+
+            var previous = anchor.Find(spec.HandVisualName);
+            if (previous != null) Object.DestroyImmediate(previous.gameObject);
+
+            var host = new GameObject(spec.HandVisualName);
+            host.transform.SetParent(anchor, false);
+            host.transform.localPosition = Vector3.zero;
+            host.transform.localRotation = Quaternion.identity;
+            host.transform.localScale = Vector3.one;
+
+            var copy = (GameObject)PrefabUtility.InstantiatePrefab(model, host.transform);
+            PrefabUtility.UnpackPrefabInstance(copy, PrefabUnpackMode.Completely, InteractionMode.AutomatedAction);
+            copy.transform.localPosition = Vector3.zero;
+            copy.transform.localRotation = Quaternion.identity;
+            copy.transform.localScale = Vector3.one;
+
+            var node = FindDescendant(copy.transform, nodeName);
+            if (node == null)
+            {
+                Debug.LogError($"[HideAndSeek] No se encontro el nodo de mano '{nodeName}' del robot del {spec.Label}.");
+                Object.DestroyImmediate(host);
+                return null;
+            }
+
+            // Se saca el nodo del resto del modelo conservando su pose, y se tira lo demas.
+            var hand = new GameObject("Hand").transform;
+            hand.SetParent(host.transform, false);
+            node.SetParent(hand, true);
+
+            // La articulacion se toma antes de tirar la copia: puede ser un nodo de fuera de la mano.
+            var jointNode = string.IsNullOrEmpty(jointNodeName) ? node : FindDescendant(copy.transform, jointNodeName);
+            if (jointNode == null)
+            {
+                Debug.LogError($"[HideAndSeek] No se encontro el nodo de articulacion '{jointNodeName}' del robot del {spec.Label}.");
+                Object.DestroyImmediate(host);
+                return null;
+            }
+            Vector3 joint = hand.InverseTransformPoint(jointNode.position);
+            Object.DestroyImmediate(copy);
+
+            foreach (var collider in hand.GetComponentsInChildren<Collider>(true))
+            {
+                Object.DestroyImmediate(collider);
+            }
+
+            if (!TryMeasureModel(hand, node, out Bounds bounds))
+            {
+                Debug.LogError($"[HideAndSeek] El nodo de mano '{nodeName}' no tiene mallas que medir.");
+                Object.DestroyImmediate(host);
+                return null;
+            }
+
+            // Eje dominante de articulacion -> centro de la malla, con su signo.
+            Vector3 outward = bounds.center - joint;
+            int axisIndex = 0;
+            for (int i = 1; i < 3; i++)
+            {
+                if (Mathf.Abs(outward[i]) > Mathf.Abs(outward[axisIndex])) axisIndex = i;
+            }
+            Vector3 axis = Vector3.zero;
+            axis[axisIndex] = outward[axisIndex] >= 0f ? 1f : -1f;
+
+            // Punto de agarre a lo largo del eje, centrado en las otras dos direcciones.
+            float near = bounds.center[axisIndex] - bounds.extents[axisIndex];
+            float far = bounds.center[axisIndex] + bounds.extents[axisIndex];
+            if (axis[axisIndex] < 0f) (near, far) = (far, near);
+            Vector3 grip = bounds.center;
+            grip[axisIndex] = Mathf.Lerp(near, far, spec.HandGripFraction);
+
+            Quaternion rotation = Quaternion.Euler(spec.HandEuler) * Quaternion.FromToRotation(axis, Vector3.forward);
+            hand.localScale = Vector3.one * scale;
+            hand.localRotation = rotation;
+            hand.localPosition = -(rotation * grip) * scale;
+
+            Debug.Log($"[HideAndSeek] Mano '{nodeName}' del {spec.Label} montada en {anchor.name}: " +
+                      $"{bounds.size[axisIndex] * scale:F2} m de largo, eje {axis}.");
+            return host;
+        }
+
+        /// <summary>
+        /// Pistola del buscador vista por los demas. Se deja enlazada al prefab de la pistola, asi
+        /// que cambiar Pistol.prefab la cambia tambien aqui.
+        /// </summary>
+        private static GameObject MountGun(Transform anchor)
+        {
+            var previous = anchor.Find(SeekerGunVisualName);
+            if (previous != null) Object.DestroyImmediate(previous.gameObject);
+
+            var gunPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(PistolPrefabPath);
+            if (gunPrefab == null)
+            {
+                Debug.LogError($"[HideAndSeek] Falta {PistolPrefabPath}.");
+                return null;
+            }
+
+            var gun = (GameObject)PrefabUtility.InstantiatePrefab(gunPrefab, anchor);
+            gun.name = SeekerGunVisualName;
+            gun.transform.localPosition = GunLocalPosition;
+            gun.transform.localRotation = Quaternion.Euler(GunLocalEuler);
+            gun.transform.localScale = Vector3.one;
+            return gun;
+        }
+
+        /// <summary>
+        /// Borra los links de brazo. Se recorre la lista entera y no solo los hombros porque la
+        /// cadena puede venir aplanada; los hijos que ya cayeron con su padre se detectan por null.
+        /// </summary>
+        private static int RemoveArms(GameObject model, string[] armPrefixes)
+        {
+            var doomed = new List<Transform>();
+            foreach (var t in model.GetComponentsInChildren<Transform>(true))
+            {
+                foreach (var prefix in armPrefixes)
+                {
+                    if (t.name.StartsWith(prefix, System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        doomed.Add(t);
+                        break;
+                    }
+                }
+            }
+
+            int removed = 0;
+            foreach (var t in doomed)
+            {
+                if (t == null) continue;   // ya cayo al destruir a su padre
+                Object.DestroyImmediate(t.gameObject);
+                removed++;
+            }
+            return removed;
+        }
+
+        /// <summary>
+        /// Bounds de las mallas de <paramref name="subtree"/> en el espacio local de
+        /// <paramref name="space"/>.
+        ///
+        /// Se calcula a mano desde <c>sharedMesh.bounds</c> y no con <c>Renderer.bounds</c>: esto
+        /// corre sobre el contenido de un prefab cargado fuera de ninguna escena real, donde los
+        /// bounds de los renderers pueden no estar actualizados.
+        /// </summary>
+        private static bool TryMeasureModel(Transform space, Transform subtree, out Bounds bounds)
+        {
+            bounds = default;
+            bool any = false;
+
+            foreach (var filter in subtree.GetComponentsInChildren<MeshFilter>(true))
+            {
+                var mesh = filter.sharedMesh;
+                if (mesh == null || filter.GetComponent<Renderer>() == null) continue;
+
+                Bounds local = mesh.bounds;
+                for (int corner = 0; corner < 8; corner++)
+                {
+                    var sign = new Vector3(
+                        (corner & 1) == 0 ? -1f : 1f,
+                        (corner & 2) == 0 ? -1f : 1f,
+                        (corner & 4) == 0 ? -1f : 1f);
+                    Vector3 world = filter.transform.TransformPoint(local.center + Vector3.Scale(local.extents, sign));
+                    Vector3 point = space.InverseTransformPoint(world);
+
+                    if (!any)
+                    {
+                        bounds = new Bounds(point, Vector3.zero);
+                        any = true;
+                    }
+                    else
+                    {
+                        bounds.Encapsulate(point);
+                    }
+                }
+            }
+
+            return any;
+        }
+
+        private static Transform FindDescendant(Transform root, string name)
+        {
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (t.name == name) return t;
+            }
+            return null;
         }
 
         // --------------------------------------------------------------- utilidades
