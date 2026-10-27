@@ -289,10 +289,9 @@ namespace Colivri.HideAndSeek
             SetText(roleText, RoleLabel(role));
             if (roleText != null) roleText.color = RoleColor(role);
 
-            // TimerDef.FormatMMSS ya existe en el proyecto y es estatico: se reutiliza tal cual.
             SetText(timerText, state == GameState.WaitingForPlayers
                 ? "--:--"
-                : TimerDef.FormatMMSS(manager.PhaseTimeRemaining));
+                : FormatMMSS(manager.PhaseTimeRemaining));
 
             SetText(hidersText, manager.HidersTotal.Value > 0
                 ? $"Escondidos: {manager.HidersAlive.Value}/{manager.HidersTotal.Value}"
@@ -983,6 +982,13 @@ namespace Colivri.HideAndSeek
             rect.anchorMax = Vector2.one;
             rect.offsetMin = Vector2.zero;
             rect.offsetMax = Vector2.zero;
+        }
+
+        /// Segundos a "mm:ss". Los negativos cuentan como cero.
+        private static string FormatMMSS(float seconds)
+        {
+            int total = Mathf.FloorToInt(Mathf.Max(0f, seconds));
+            return $"{total / 60:00}:{total % 60:00}";
         }
 
         private static void SetText(TextMeshProUGUI label, string value)
