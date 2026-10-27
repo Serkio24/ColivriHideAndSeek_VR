@@ -33,6 +33,10 @@ namespace Colivri.HideAndSeek
         [SerializeField] private AudioSource audioSource;
         [SerializeField] private AudioClip fireClip;
         [SerializeField] private AudioClip hitClip;
+        [Tooltip("Hasta esta distancia los disparos de otros jugadores suenan a volumen completo.")]
+        [SerializeField] private float remoteShotMinDistance = 2f;
+        [Tooltip("Distancia a la que los disparos de otros jugadores dejan de oirse.")]
+        [SerializeField] private float remoteShotMaxDistance = 60f;
 
         [Header("Vibracion")]
         [SerializeField] private float hapticAmplitude = 0.6f;
@@ -134,7 +138,9 @@ namespace Colivri.HideAndSeek
             }
 
             ShowTracer(origin, end);
-            PlayClip(didHit ? hitClip : fireClip);
+            // El disparo suena siempre, posicionado en el que dispara, para que se sepa de donde viene.
+            PlayClipAt(fireClip, origin);
+            if (didHit) PlayClipAt(hitClip, end);
         }
 
         private void OnLocalPlayerHit()
@@ -179,6 +185,26 @@ namespace Colivri.HideAndSeek
         {
             if (audioSource == null || clip == null) return;
             audioSource.PlayOneShot(clip);
+        }
+
+        /// Sonido 3D de un solo uso en un punto del mundo. No se usa AudioSource.PlayClipAtPoint
+        /// porque no deja elegir la atenuacion, y con la de por defecto un disparo lejano casi no se oye.
+        private void PlayClipAt(AudioClip clip, Vector3 position)
+        {
+            if (clip == null) return;
+
+            var go = new GameObject("ShotSound");
+            go.transform.position = position;
+
+            var source = go.AddComponent<AudioSource>();
+            source.clip = clip;
+            source.spatialBlend = 1f;
+            source.rolloffMode = AudioRolloffMode.Linear;
+            source.minDistance = remoteShotMinDistance;
+            source.maxDistance = remoteShotMaxDistance;
+            source.Play();
+
+            Destroy(go, clip.length + 0.1f);
         }
 
         private void Pulse(OVRInput.Controller controller = OVRInput.Controller.RTouch)

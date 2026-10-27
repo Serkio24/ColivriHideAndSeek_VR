@@ -33,6 +33,11 @@ namespace Colivri.HideAndSeek
         [Tooltip("Capacidad de la sala. Se sincroniza sola con AutoMatchmakingNGO.maxPlayersPerRoom " +
                  "si hay matchmaking en la escena; este valor es solo el respaldo.")]
         [SerializeField] private int maxPlayers = 4;
+        [Tooltip("Buscadores con los que arranca el lobby. El host lo cambia desde la pagina Equipos del HUD; " +
+                 "el resto de jugadores se esconde.")]
+        [SerializeField] private int defaultSeekers = 1;
+        [Tooltip("Separacion lateral, en metros, entre buscadores que comparten punto de aparicion.")]
+        [SerializeField] private float seekerSpacing = 0.8f;
 
         [Header("Disparo")]
         [Tooltip("Alcance maximo del disparo, en metros.")]
@@ -74,6 +79,12 @@ namespace Colivri.HideAndSeek
             NetworkVariableReadPermission.Everyone,
             NetworkVariableWritePermission.Server);
 
+        /// Cuantos buscan en la proxima ronda. El resto se esconde. Lo fija el host en el lobby.
+        public readonly NetworkVariable<int> SeekerCount = new NetworkVariable<int>(
+            1,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
         // -------------------------------------------------------------- eventos
 
         /// Se dispara en todos los clientes cuando se ejecuta un disparo (para el trazo visual).
@@ -96,9 +107,18 @@ namespace Colivri.HideAndSeek
         /// el HUD pregunta cada frame desde mucho antes.
         public bool IsLocalHost => IsSpawned && IsServer;
 
+        /// Mayor numero de buscadores que se puede pedir: siempre tiene que quedar sitio para un escondido.
+        public int MaxSeekers => Mathf.Max(1, maxPlayers - 1);
+
+        /// Jugadores que hacen falta para arrancar: los buscadores pedidos mas al menos un escondido.
+        /// En modo prueba basta con uno, que luego elige su rol desde el HUD.
+        public int PlayersNeeded => HideAndSeekTestMode.Enabled
+            ? 1
+            : Mathf.Max(minPlayers, SeekerCount.Value + 1);
+
         /// Si ahora mismo se puede arrancar una ronda.
         public bool CanStartRound =>
-            State.Value == GameState.WaitingForPlayers && PlayerCount >= minPlayers;
+            State.Value == GameState.WaitingForPlayers && PlayerCount >= PlayersNeeded;
 
         /// Segundos que quedan de la fase actual (0 si la fase no tiene cuenta atras).
         public float PhaseTimeRemaining
@@ -116,8 +136,8 @@ namespace Colivri.HideAndSeek
 
         private readonly Dictionary<ulong, double> _lastShotTime = new Dictionary<ulong, double>();
 
-        /// Buscador de la ronda en curso (solo en el servidor), para llevarlo a su punto al empezar la busqueda.
-        private NetworkPlayer _seeker;
+        /// Buscadores de la ronda en curso (solo en el servidor), para llevarlos a su punto al empezar la busqueda.
+        private readonly List<NetworkPlayer> _seekers = new List<NetworkPlayer>();
 
         // Cache para no reaplicar el estado local en cada frame.
         private GameState _appliedState = (GameState)255;
@@ -150,6 +170,10 @@ namespace Colivri.HideAndSeek
             if (IsServer && NetworkManager.Singleton != null)
             {
                 NetworkManager.Singleton.OnClientDisconnectCallback += HandleClientDisconnect;
+            }
+            if (IsServer)
+            {
+                SeekerCount.Value = Mathf.Clamp(defaultSeekers, 1, MaxSeekers);
             }
         }
 
@@ -208,7 +232,9 @@ namespace Colivri.HideAndSeek
                     break;
 
                 case GameState.Seeking:
-                    if (HidersAlive.Value <= 0)
+                    // En modo prueba quedarse sin escondidos es normal (se juega solo o se cambia
+                    // de rol a mano), asi que esa victoria solo la da un disparo: ver EliminateHider.
+                    if (!HideAndSeekTestMode.Enabled && HidersAlive.Value <= 0)
                     {
                         EndRound(seekerWon: true, now);
                     }
@@ -239,20 +265,44 @@ namespace Colivri.HideAndSeek
             StartRound();
         }
 
+        /// <summary>
+        /// El host cambia cuantos buscan desde la pagina Equipos del HUD. Mismo esquema que
+        /// <see cref="RequestStartRound"/>: solo vale en el host y solo en el lobby.
+        /// Siempre queda al menos un buscador y sitio para al menos un escondido.
+        /// </summary>
+        public void RequestSetSeekerCount(int value)
+        {
+            if (!IsServer || !IsSpawned) return;
+            if (State.Value != GameState.WaitingForPlayers) return;
+            SeekerCount.Value = Mathf.Clamp(value, 1, MaxSeekers);
+        }
+
         private void StartRound()
         {
             var players = new List<NetworkPlayer>(NetworkPlayer.All);
             players.RemoveAll(p => p == null);
-            if (players.Count < minPlayers) return;
+            if (players.Count < PlayersNeeded || players.Count == 0) return;
 
-            int seekerIndex = UnityEngine.Random.Range(0, players.Count);
+            // Fisher-Yates: los primeros de la lista barajada buscan y el resto se esconde.
+            for (int i = players.Count - 1; i > 0; i--)
+            {
+                int j = UnityEngine.Random.Range(0, i + 1);
+                (players[i], players[j]) = (players[j], players[i]);
+            }
+
+            // Nunca buscan todos: queda al menos un escondido. La unica excepcion es el modo prueba
+            // con un solo jugador, que arranca de buscador y cambia de rol desde el HUD.
+            int seekers = Mathf.Clamp(SeekerCount.Value, 1, Mathf.Max(1, players.Count - 1));
+
+            _seekers.Clear();
             var hiders = new List<NetworkPlayer>();
 
             for (int i = 0; i < players.Count; i++)
             {
-                if (i == seekerIndex)
+                if (i < seekers)
                 {
                     players[i].SetRole(PlayerRole.Seeker);
+                    _seekers.Add(players[i]);
                 }
                 else
                 {
@@ -264,8 +314,7 @@ namespace Colivri.HideAndSeek
             HidersTotal.Value = hiders.Count;
             HidersAlive.Value = hiders.Count;
 
-            _seeker = players[seekerIndex];
-            PlaceSeekerWhileHiding(_seeker);
+            PlaceSeekersWhileHiding();
             PlaceHiders(hiders);
 
             double now = ServerNow;
@@ -276,14 +325,14 @@ namespace Colivri.HideAndSeek
 
         private void BeginSeeking(double now)
         {
-            PlaceSeeker(_seeker);
+            PlaceSeekers();
             PhaseEndServerTime.Value = now + seekDuration;
             State.Value = GameState.Seeking;
         }
 
         private void EndRound(bool seekerWon, double now)
         {
-            _seeker = null;
+            _seekers.Clear();
             SeekerWonLastRound.Value = seekerWon;
             PhaseEndServerTime.Value = now + roundOverDuration;
             State.Value = GameState.RoundOver;
@@ -310,6 +359,8 @@ namespace Colivri.HideAndSeek
             if (!IsServer) return;
             if (State.Value == GameState.WaitingForPlayers || State.Value == GameState.RoundOver) return;
 
+            _seekers.RemoveAll(p => p == null || p.OwnerClientId == clientId);
+
             bool seekerStillHere = false;
             int hidersLeft = 0;
             foreach (var player in NetworkPlayer.All)
@@ -321,6 +372,9 @@ namespace Colivri.HideAndSeek
 
             HidersAlive.Value = hidersLeft;
 
+            // En modo prueba la ronda solo se corta si ya no queda nadie con rol de juego.
+            if (HideAndSeekTestMode.Enabled && (seekerStillHere || hidersLeft > 0)) return;
+
             double now = ServerNow;
             if (!seekerStillHere || hidersLeft == 0)
             {
@@ -328,21 +382,76 @@ namespace Colivri.HideAndSeek
             }
         }
 
-        // ------------------------------------------------------------- posiciones
+        // ---------------------------------------------------------- modo prueba
 
-        /// Mientras los demas se esconden, el buscador espera en su punto de espera (sin moverse).
-        private void PlaceSeekerWhileHiding(NetworkPlayer seeker)
+        /// <summary>
+        /// Modo prueba: el jugador elige su rol en plena ronda desde la pagina Prueba del HUD.
+        /// Se queda donde esta; la escala, la pistola y el bloqueo de locomocion del buscador
+        /// los aplican solos NetworkPlayer.OnRoleChanged y RefreshLocalPlayer.
+        /// Fuera del modo prueba se ignora, por si alguien manda la RPC a mano.
+        /// </summary>
+        [ServerRpc(RequireOwnership = false)]
+        public void RequestTestRoleServerRpc(PlayerRole role, ServerRpcParams serverRpcParams = default)
         {
-            if (spawnPoints == null || seeker == null) return;
-            var point = spawnPoints.GetSeekerWaitPoint();
-            if (point != null) TeleportPlayer(seeker.OwnerClientId, point);
+            if (!HideAndSeekTestMode.Enabled) return;
+            if (State.Value != GameState.Hiding && State.Value != GameState.Seeking) return;
+            if (role != PlayerRole.Seeker && role != PlayerRole.Hider) return;
+
+            NetworkPlayer player = FindPlayer(serverRpcParams.Receive.SenderClientId);
+            if (player == null || player.Role.Value == role) return;
+
+            player.SetRole(role);
+            _seekers.Remove(player);
+            if (role == PlayerRole.Seeker) _seekers.Add(player);
+
+            RecountHiders();
         }
 
-        private void PlaceSeeker(NetworkPlayer seeker)
+        /// Recalcula los contadores del HUD: vivos = escondidos, total = escondidos + eliminados.
+        private void RecountHiders()
         {
-            if (spawnPoints == null || seeker == null) return;
-            var point = spawnPoints.GetSeekerPoint();
-            if (point != null) TeleportPlayer(seeker.OwnerClientId, point);
+            int alive = 0;
+            int eliminated = 0;
+            foreach (var player in NetworkPlayer.All)
+            {
+                if (player == null) continue;
+                if (player.Role.Value == PlayerRole.Hider) alive++;
+                else if (player.Role.Value == PlayerRole.Spectator) eliminated++;
+            }
+            HidersAlive.Value = alive;
+            HidersTotal.Value = alive + eliminated;
+        }
+
+        // ------------------------------------------------------------- posiciones
+
+        /// Mientras los demas se esconden, los buscadores esperan en su punto de espera (sin moverse).
+        private void PlaceSeekersWhileHiding()
+        {
+            if (spawnPoints == null) return;
+            PlaceSeekersAt(spawnPoints.GetSeekerWaitPoint());
+        }
+
+        private void PlaceSeekers()
+        {
+            if (spawnPoints == null) return;
+            PlaceSeekersAt(spawnPoints.GetSeekerPoint());
+        }
+
+        /// <summary>
+        /// Todos los buscadores comparten punto. Se reparten en fila a lo largo del eje lateral del
+        /// punto, centrada en el, para que no aparezcan uno dentro de otro.
+        /// </summary>
+        private void PlaceSeekersAt(Transform point)
+        {
+            if (point == null) return;
+
+            _seekers.RemoveAll(p => p == null);
+            float first = -(_seekers.Count - 1) * 0.5f * seekerSpacing;
+            for (int i = 0; i < _seekers.Count; i++)
+            {
+                Vector3 offset = point.right * (first + i * seekerSpacing);
+                TeleportPlayer(_seekers[i].OwnerClientId, point, offset);
+            }
         }
 
         private void PlaceHiders(List<NetworkPlayer> hiders)
@@ -355,9 +464,9 @@ namespace Colivri.HideAndSeek
             }
         }
 
-        private void TeleportPlayer(ulong clientId, Transform point)
+        private void TeleportPlayer(ulong clientId, Transform point, Vector3 offset = default)
         {
-            TeleportClientRpc(point.position, point.eulerAngles.y, new ClientRpcParams
+            TeleportClientRpc(point.position + offset, point.eulerAngles.y, new ClientRpcParams
             {
                 Send = new ClientRpcSendParams { TargetClientIds = new[] { clientId } }
             });
@@ -428,6 +537,13 @@ namespace Colivri.HideAndSeek
             {
                 Send = new ClientRpcSendParams { TargetClientIds = new[] { victim.OwnerClientId } }
             });
+
+            // En modo prueba TickServer no mira los escondidos que quedan; la victoria del buscador
+            // solo cuenta si la provoca un disparo de verdad.
+            if (HideAndSeekTestMode.Enabled && HidersAlive.Value <= 0)
+            {
+                EndRound(seekerWon: true, ServerNow);
+            }
         }
 
         [ClientRpc]

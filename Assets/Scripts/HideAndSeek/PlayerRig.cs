@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Oculus.Interaction.Locomotion;
 using UnityEngine;
 
 namespace Colivri.HideAndSeek
@@ -17,6 +18,9 @@ namespace Colivri.HideAndSeek
         /// El rig local. Solo hay uno por instancia del juego.
         public static PlayerRig Local { get; private set; }
 
+        /// Nodo del rig de ISDK del que cuelga todo lo del mando derecho.
+        private const string RightControllerName = "RightController";
+
         [Header("Referencias del rig (se resuelven solas si se dejan vacias)")]
         [Tooltip("Transform de OVRCameraRig. Es el mismo que PlayerLocomotor usa como _playerOrigin.")]
         [SerializeField] private Transform rigOrigin;
@@ -28,6 +32,10 @@ namespace Colivri.HideAndSeek
         [Tooltip("Grupos de interactores de locomocion que se apagan mientras el buscador espera a que los demas se escondan. " +
                  "Si se deja vacio se buscan por nombre.")]
         [SerializeField] private GameObject[] locomotionInteractors;
+
+        [Tooltip("Interactores de giro del joystick derecho. Se apagan al arrancar: ese joystick pasa " +
+                 "las paginas del HUD y no debe mover la camara. Si se deja vacio se buscan solos.")]
+        [SerializeField] private GameObject[] rightStickTurners;
 
         [Header("Escala por rol")]
         [Tooltip("Escala del buscador. 1 = tamano real.")]
@@ -63,6 +71,7 @@ namespace Colivri.HideAndSeek
             }
 
             SetLocomotionEnabled(true);
+            DisableRightStickTurn();
         }
 
         private void OnDestroy()
@@ -100,6 +109,61 @@ namespace Colivri.HideAndSeek
             if (locomotionInteractors == null || locomotionInteractors.Length == 0)
             {
                 locomotionInteractors = FindLocomotionInteractors();
+            }
+
+            if (rightStickTurners == null || rightStickTurners.Length == 0)
+            {
+                rightStickTurners = FindRightStickTurners();
+            }
+        }
+
+        /// <summary>
+        /// Cada mando tiene su LocomotionControllerInteractorGroup con un turner de joystick
+        /// (ControllerTurnerInteractor), y los dos se llaman igual. Lo que distingue el derecho es
+        /// colgar de OVRControllers/RightController.
+        ///
+        /// No se pregunta al ControllerRef del grupo por su Handedness porque aqui estamos en Awake
+        /// y el suyo puede no haber corrido todavia: devolveria un NullReferenceException.
+        /// </summary>
+        private GameObject[] FindRightStickTurners()
+        {
+            var found = new List<GameObject>();
+            foreach (var turner in GetComponentsInChildren<LocomotionAxisTurnerInteractor>(true))
+            {
+                if (HasAncestorNamed(turner.transform, RightControllerName))
+                {
+                    found.Add(turner.gameObject);
+                }
+            }
+
+            if (found.Count == 0)
+            {
+                Debug.LogWarning("[PlayerRig] No se encontro el giro del joystick derecho: " +
+                                 "seguira girando la camara ademas de pasar las paginas del HUD.", this);
+            }
+            return found.ToArray();
+        }
+
+        /// <summary>
+        /// Apaga el GameObject del turner, que es hijo del grupo de locomocion. Asi
+        /// SetLocomotionEnabled puede seguir encendiendo y apagando el grupo entero sin
+        /// devolverle el giro. El teleport del mando derecho no se toca.
+        /// </summary>
+        private bool HasAncestorNamed(Transform t, string name)
+        {
+            for (; t != null && t != transform; t = t.parent)
+            {
+                if (t.name == name) return true;
+            }
+            return false;
+        }
+
+        private void DisableRightStickTurn()
+        {
+            if (rightStickTurners == null) return;
+            foreach (var go in rightStickTurners)
+            {
+                if (go != null) go.SetActive(false);
             }
         }
 

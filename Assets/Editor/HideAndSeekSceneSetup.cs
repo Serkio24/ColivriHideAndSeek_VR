@@ -27,6 +27,7 @@ namespace Colivri.HideAndSeek.EditorTools
         private const string ScenePath = "Assets/Scenes/MainModel/MainModel_Env.unity";
         private const string PlayerPrefabPath = "Assets/Prefabs/Network/NetworkPlayer.prefab";
         private const string PistolPrefabPath = "Assets/Prefabs/HideAndSeek/Pistol.prefab";
+        private const string HudFontPath = "Assets/Fonts/hemi_head/HemiHead-Bold SDF.asset";
 
         private const string PlayerRootName = "PlayerRoot";
         private const string ManagerName = "[HideAndSeek] Manager";
@@ -733,15 +734,22 @@ namespace Colivri.HideAndSeek.EditorTools
             bgRect.anchorMax = Vector2.one;
             bgRect.offsetMin = Vector2.zero;
             bgRect.offsetMax = Vector2.zero;
-            background.GetComponent<UnityEngine.UI.Image>().color = new Color(0f, 0f, 0f, 0.55f);
+            // El color definitivo (borde azul claro + relleno blanco redondeado) lo pone
+            // HideAndSeekHUD en runtime; aqui solo se deja algo parecido para el editor.
+            background.GetComponent<UnityEngine.UI.Image>().color = Color.white;
 
-            var role = CreateLabel(host.transform, "RoleText", new Vector2(0f, 68f), 34f, FontStyles.Bold);
-            var timer = CreateLabel(host.transform, "TimerText", new Vector2(0f, 20f), 48f, FontStyles.Bold);
-            var hiders = CreateLabel(host.transform, "HidersText", new Vector2(0f, -28f), 24f, FontStyles.Normal);
-            var status = CreateLabel(host.transform, "StatusText", new Vector2(0f, -68f), 20f, FontStyles.Italic);
+            var font = AssetDatabase.LoadAssetAtPath<TMP_FontAsset>(HudFontPath);
+            if (font == null) Debug.LogWarning($"[HideAndSeek] Falta {HudFontPath}: el HUD usara la fuente por defecto.");
+
+            // Sin Bold: HemiHead ya es bold.
+            var role = CreateLabel(host.transform, "RoleText", new Vector2(0f, 68f), 34f, FontStyles.Normal, font);
+            var timer = CreateLabel(host.transform, "TimerText", new Vector2(0f, 20f), 48f, FontStyles.Normal, font);
+            var hiders = CreateLabel(host.transform, "HidersText", new Vector2(0f, -28f), 24f, FontStyles.Normal, font);
+            var status = CreateLabel(host.transform, "StatusText", new Vector2(0f, -68f), 20f, FontStyles.Italic, font);
 
             var hud = host.AddComponent<HideAndSeekHUD>();
             var so = new SerializedObject(hud);
+            so.FindProperty("font").objectReferenceValue = font;
             so.FindProperty("roleText").objectReferenceValue = role;
             so.FindProperty("timerText").objectReferenceValue = timer;
             so.FindProperty("hidersText").objectReferenceValue = hiders;
@@ -753,7 +761,7 @@ namespace Colivri.HideAndSeek.EditorTools
         }
 
         private static TextMeshProUGUI CreateLabel(Transform parent, string name, Vector2 position,
-                                                   float size, FontStyles style)
+                                                   float size, FontStyles style, TMP_FontAsset font)
         {
             var go = new GameObject(name, typeof(TextMeshProUGUI));
             go.transform.SetParent(parent, false);
@@ -766,7 +774,8 @@ namespace Colivri.HideAndSeek.EditorTools
             label.alignment = TextAlignmentOptions.Center;
             label.fontSize = size;
             label.fontStyle = style;
-            label.color = Color.white;
+            label.color = new Color(0.067f, 0.067f, 0.067f);
+            if (font != null) label.font = font;
             label.text = name;
             return label;
         }
