@@ -28,6 +28,9 @@ namespace Colivri.HideAndSeek
         /// El buscador ya puede moverse y disparar.
         Seeking = 2,
         /// Pantalla de resultado antes de volver a empezar.
-        RoundOver = 3
+        RoundOver = 3,
+        /// Cinematica de la historia que ven todos entre el INICIAR del host y el reparto de roles.
+        /// Va al final para no cambiar el valor de los estados que ya existian.
+        Intro = 4
     }
 }

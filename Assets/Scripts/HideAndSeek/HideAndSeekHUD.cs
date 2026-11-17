@@ -20,6 +20,7 @@ namespace Colivri.HideAndSeek
     ///
     /// El panel tiene varias paginas que se pasan con el joystick derecho (izquierda/derecha):
     ///  0. Partida: lo de siempre. En el lobby, y solo en el HUD del host, aparece un boton INICIAR.
+    ///     Durante la cinematica ese mismo boton pasa a SALTAR (solo a partir de la segunda vez).
     ///  1. Equipos: cuantos buscan (el resto se esconde). Solo lo cambia el host, en el lobby.
     ///  2. Prueba: solo con el modo de prueba (ver <see cref="HideAndSeekTestMode"/>). Durante la
     ///     ronda deja elegir BUSCAR o ESCONDERSE.
@@ -334,6 +335,9 @@ namespace Colivri.HideAndSeek
 
         public void ToggleVisible() => SetVisible(!_visible);
 
+        /// Si el HUD esta encendido. El tutorial del lobby lo mira para saber si ya se aprendio el gesto.
+        public bool IsVisible => _visible;
+
         // --------------------------------------------------------- gesto de puno
 
         private void PollFistGesture()
@@ -647,17 +651,30 @@ namespace Colivri.HideAndSeek
 
         /// <summary>
         /// Muestra el boton INICIAR solo en el HUD del host y solo en el lobby, lo pinta segun
-        /// haya gente suficiente o no, y recoge la pulsacion.
+        /// haya gente suficiente o no, y recoge la pulsacion. Durante la cinematica el mismo boton
+        /// es SALTAR, y solo aparece cuando ya se ha visto una vez entera.
         /// </summary>
         private void UpdateStartButton(HideAndSeekManager manager, GameState state, bool hasPoint, Vector3 point)
         {
-            bool show = state == GameState.WaitingForPlayers && manager.IsLocalHost;
+            bool skip = state == GameState.Intro && manager.IsLocalHost && manager.CanSkipIntro;
+            bool show = (state == GameState.WaitingForPlayers && manager.IsLocalHost) || skip;
             _startButton.Visible = show;
+            _startButton.SetText(skip ? "SALTAR" : "INICIAR");
 
             // El estado del dedo se sigue actualizando aunque no se acepte la pulsacion, para
             // que no cuente como entrada nueva un dedo que ya estaba encima del boton.
             bool poked = _startButton.Poll(hasPoint, point, pokeDepth);
             if (!show) return;
+
+            if (skip)
+            {
+                PaintButton(_startButton, true, startEnabledColor);
+                if (!CanPress(GamePage)) return;
+                if (!poked && !ShortcutDown(startShortcut)) return;
+                manager.RequestSkipIntro();
+                ConfirmPress();
+                return;
+            }
 
             // Sin gente suficiente el boton se ve, pero esta inerte: asi el host sabe que existe
             // y que le falta alguien, en vez de verlo aparecer de la nada.
@@ -935,6 +952,10 @@ namespace Colivri.HideAndSeek
                         ? $"{waiting} - pulsa INICIAR"
                         : $"{waiting} - el anfitrion inicia";
                 }
+
+                case GameState.Intro:
+                    if (manager.IsLocalHost && manager.CanSkipIntro) return "Historia - pulsa SALTAR para empezar";
+                    return "Mira la pantalla: la historia";
 
                 case GameState.Hiding:
                     if (role == PlayerRole.Seeker) return "Cuenta atras... no puedes ver";

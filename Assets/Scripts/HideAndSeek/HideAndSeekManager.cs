@@ -26,6 +26,9 @@ namespace Colivri.HideAndSeek
         [SerializeField] private float seekDuration = 300f;
         [Tooltip("Tiempo que se muestra el resultado antes de volver al lobby.")]
         [SerializeField] private float roundOverDuration = 10f;
+        [Tooltip("Duracion de la cinematica de intro. La escribe el builder de la cinematica con la " +
+                 "duracion del Timeline; 0 la desactiva y INICIAR arranca la ronda directamente.")]
+        [SerializeField] private float introDuration = 70f;
 
         [Header("Reglas")]
         [Tooltip("Jugadores necesarios para que el host pueda arrancar una ronda.")]
@@ -36,7 +39,8 @@ namespace Colivri.HideAndSeek
         [Tooltip("Buscadores con los que arranca el lobby. El host lo cambia desde la pagina Equipos del HUD; " +
                  "el resto de jugadores se esconde.")]
         [SerializeField] private int defaultSeekers = 1;
-        [Tooltip("Separacion lateral, en metros, entre buscadores que comparten punto de aparicion.")]
+        [Tooltip("Separacion lateral, en metros, entre buscadores que comparten punto de aparicion. " +
+                 "Tambien separa a los jugadores en el punto de espera del lobby y de la cinematica.")]
         [SerializeField] private float seekerSpacing = 0.8f;
 
         [Header("Disparo")]
@@ -82,6 +86,19 @@ namespace Colivri.HideAndSeek
         /// Cuantos buscan en la proxima ronda. El resto se esconde. Lo fija el host en el lobby.
         public readonly NetworkVariable<int> SeekerCount = new NetworkVariable<int>(
             1,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
+        /// Momento (en tiempo de servidor) en el que arranco la cinematica: cada cliente coloca su
+        /// Timeline en (ahora - esto), asi todos ven el mismo plano y quien entra tarde se engancha.
+        public readonly NetworkVariable<double> IntroStartServerTime = new NetworkVariable<double>(
+            0d,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
+        /// La cinematica ya se vio entera una vez en esta sala: a partir de ahi el host puede saltarla.
+        public readonly NetworkVariable<bool> IntroSkippable = new NetworkVariable<bool>(
+            false,
             NetworkVariableReadPermission.Everyone,
             NetworkVariableWritePermission.Server);
 
@@ -133,6 +150,16 @@ namespace Colivri.HideAndSeek
 
         public PlayerRole LocalRole =>
             NetworkPlayer.Local != null ? NetworkPlayer.Local.Role.Value : PlayerRole.Unassigned;
+
+        /// Segundos que lleva la cinematica, segun el reloj del servidor. 0 fuera de la intro.
+        public double IntroElapsed =>
+            State.Value == GameState.Intro ? System.Math.Max(0d, ServerNow - IntroStartServerTime.Value) : 0d;
+
+        /// Duracion configurada de la cinematica.
+        public float IntroDuration => introDuration;
+
+        /// Si el host puede pulsar SALTAR ahora mismo.
+        public bool CanSkipIntro => State.Value == GameState.Intro && IntroSkippable.Value;
 
         private readonly Dictionary<ulong, double> _lastShotTime = new Dictionary<ulong, double>();
 
@@ -224,6 +251,13 @@ namespace Colivri.HideAndSeek
                     // INICIAR de su HUD, que acaba llamando a RequestStartRound().
                     break;
 
+                case GameState.Intro:
+                    if (now >= PhaseEndServerTime.Value)
+                    {
+                        FinishIntro();
+                    }
+                    break;
+
                 case GameState.Hiding:
                     if (now >= PhaseEndServerTime.Value)
                     {
@@ -262,7 +296,67 @@ namespace Colivri.HideAndSeek
         {
             if (!IsServer || !IsSpawned) return;
             if (!CanStartRound) return;
+
+            if (introDuration > 0f) BeginIntro();
+            else StartRound();
+        }
+
+        /// <summary>
+        /// El host corta la cinematica para todos. Solo se puede a partir de la segunda vez que se
+        /// ve en la sala (<see cref="IntroSkippable"/>): la primera es obligatoria.
+        /// </summary>
+        public void RequestSkipIntro()
+        {
+            if (!IsServer || !IsSpawned) return;
+            if (!CanSkipIntro) return;
+            FinishIntro();
+        }
+
+        /// <summary>
+        /// Arranca la cinematica: todos vuelven a su hueco del punto de espera, frente a la pantalla,
+        /// y cada cliente la reproduce sincronizada con IntroStartServerTime. Los roles no se reparten
+        /// hasta que acaba, por si entra o sale alguien mientras tanto.
+        /// </summary>
+        private void BeginIntro()
+        {
+            double now = ServerNow;
+            IntroStartServerTime.Value = now;
+            PhaseEndServerTime.Value = now + introDuration;
+            State.Value = GameState.Intro;
+
+            if (spawnPoints == null) return;
+            Transform point = spawnPoints.GetSeekerWaitPoint();
+            if (point == null) return;
+            foreach (var player in NetworkPlayer.All)
+            {
+                if (player == null) continue;
+                TeleportPlayer(player.OwnerClientId, point, WaitPointOffset(point, player.OwnerClientId));
+            }
+        }
+
+        private void FinishIntro()
+        {
+            IntroSkippable.Value = true;
+
+            // Si mientras tanto se fue gente y ya no llega, se vuelve al lobby en vez de arrancar cojos.
+            if (PlayerCount < PlayersNeeded)
+            {
+                ReturnToLobby();
+                return;
+            }
             StartRound();
+        }
+
+        /// <summary>
+        /// Hueco de cada jugador en el punto de espera: en fila a lo largo del eje lateral del punto,
+        /// segun su clientId, para que no aparezcan uno dentro de otro. Lo usan la intro y el tutorial
+        /// del lobby, que coloca al jugador local por su cuenta.
+        /// </summary>
+        public Vector3 WaitPointOffset(Transform point, ulong clientId)
+        {
+            int slots = Mathf.Max(1, maxPlayers);
+            int slot = (int)(clientId % (ulong)slots);
+            return point.right * ((slot - (slots - 1) * 0.5f) * seekerSpacing);
         }
 
         /// <summary>
@@ -357,7 +451,9 @@ namespace Colivri.HideAndSeek
         private void HandleClientDisconnect(ulong clientId)
         {
             if (!IsServer) return;
-            if (State.Value == GameState.WaitingForPlayers || State.Value == GameState.RoundOver) return;
+            // En la intro todavia no hay roles: FinishIntro ya comprueba si queda gente suficiente.
+            if (State.Value == GameState.WaitingForPlayers || State.Value == GameState.RoundOver
+                || State.Value == GameState.Intro) return;
 
             _seekers.RemoveAll(p => p == null || p.OwnerClientId == clientId);
 
@@ -586,7 +682,8 @@ namespace Colivri.HideAndSeek
             _appliedState = state;
             _appliedRole = role;
 
-            bool waiting = state == GameState.Hiding && role == PlayerRole.Seeker;
+            // Durante la cinematica tampoco se mueve nadie: todos miran la pantalla desde su hueco.
+            bool waiting = (state == GameState.Hiding && role == PlayerRole.Seeker) || state == GameState.Intro;
             rig.SetLocomotionEnabled(!waiting);
         }
     }

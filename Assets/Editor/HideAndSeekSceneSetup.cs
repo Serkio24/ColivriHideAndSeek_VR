@@ -36,6 +36,12 @@ namespace Colivri.HideAndSeek.EditorTools
         /// Hijo de SpawnPoints, colocado a mano, donde espera el buscador mientras los demas se esconden.
         private const string SeekerWaitPointName = "Spawn_Buscador_WhenHiding";
 
+        // --- Tutorial del lobby ---
+        private const string TutorialName = "[HideAndSeek] Tutorial";
+        /// Hijo del tutorial, se puede recolocar a mano: el setup lo respeta si ya existe.
+        private const string TutorialTargetName = "TutorialTeleportTarget";
+        private static readonly Color TutorialTargetColor = new Color(0.165f, 0.604f, 0.839f);
+
         // --- Modelos de los avatares ---
         private const string HeadPivotName = "HeadPivot";
         private const string SeekerGunVisualName = "SeekerGunVisual";
@@ -180,6 +186,8 @@ namespace Colivri.HideAndSeek.EditorTools
             var spawnPoints = CreateSpawnPoints(scene);
             CreateManager(scene, spawnPoints);
             CreateHud(scene);
+            CreateTutorial(scene, spawnPoints);
+            IntroCinematicBuilder.Build(scene, spawnPoints);
             ConfigurePlayerRoot(playerRoot);
             PlaceRigOnGroundFloor(playerRoot, spawnPoints);
 
@@ -758,6 +766,85 @@ namespace Colivri.HideAndSeek.EditorTools
 
             EditorUtility.SetDirty(host);
             Debug.Log($"[HideAndSeek] '{HudName}' creado. Se ancla solo a la muneca izquierda en runtime.");
+        }
+
+        // ------------------------------------------------------------ 7. tutorial
+
+        /// Solo el paso del tutorial, sin rehacer los puntos de aparicion ni el resto de la escena.
+        [MenuItem("Colivri/Hide and Seek/Crear tutorial del lobby")]
+        public static void SetupTutorial()
+        {
+            var scene = EditorSceneManager.GetActiveScene();
+            if (scene.path != ScenePath)
+            {
+                Debug.LogError($"[HideAndSeek] La escena activa es '{scene.path}'. Abre {ScenePath} primero.");
+                return;
+            }
+
+            var spawnPoints = Object.FindAnyObjectByType<SpawnPointSet>(FindObjectsInactive.Include);
+            CreateTutorial(scene, spawnPoints);
+
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+        }
+
+        /// <summary>
+        /// Tutorial del lobby en el punto de espera de la oficina P1. Sus textos salen como
+        /// subtitulos: la franja la crea IntroCinematicBuilder y la engancha al tutorial.
+        /// Va en su propia raiz y no dentro de SpawnPoints, porque CreateSpawnPoints borra todos
+        /// los hijos de ese objeto menos el punto de espera.
+        /// </summary>
+        private static void CreateTutorial(Scene scene, SpawnPointSet spawnPoints)
+        {
+            var host = Find(scene, TutorialName);
+            if (host == null) host = new GameObject(TutorialName);
+            var tutorial = GetOrAdd<LobbyTutorial>(host);
+
+            var target = host.transform.Find(TutorialTargetName);
+            if (target == null) target = CreateTutorialTarget(host.transform, spawnPoints);
+
+            var so = new SerializedObject(tutorial);
+            so.FindProperty("spawnPoints").objectReferenceValue = spawnPoints;
+            so.FindProperty("teleportTarget").objectReferenceValue = target;
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            EditorUtility.SetDirty(host);
+            Debug.Log($"[HideAndSeek] '{TutorialName}' listo. Revisa que '{TutorialTargetName}' quede sobre suelo teleportable.");
+        }
+
+        /// <summary>
+        /// Circulo azul plano a metro y medio del punto de espera, apoyado en el suelo que haya
+        /// debajo. Sin collider: no debe tapar el rayo del teleport ni los disparos.
+        /// Va un poco adelante y a la izquierda porque la oficina P1 es pequena: justo delante se
+        /// sale de FloorColivri3 (el suelo teleportable) y a la derecha esta el tablero.
+        /// </summary>
+        private static Transform CreateTutorialTarget(Transform parent, SpawnPointSet spawnPoints)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            go.name = TutorialTargetName;
+            Object.DestroyImmediate(go.GetComponent<Collider>());
+            go.transform.SetParent(parent, false);
+            go.transform.localScale = new Vector3(0.8f, 0.01f, 0.8f);
+            go.GetComponent<Renderer>().sharedMaterial = HideAndSeekMaterials.CreateUnlit(TutorialTargetColor);
+
+            Transform waitPoint = spawnPoints != null ? spawnPoints.GetSeekerWaitPoint() : null;
+            if (waitPoint != null)
+            {
+                Vector3 position = waitPoint.position + waitPoint.forward * 0.6f - waitPoint.right * 1.4f;
+                if (Physics.Raycast(position + Vector3.up, Vector3.down, out var hit, 3f,
+                        Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+                {
+                    position = hit.point;
+                }
+                go.transform.position = position + Vector3.up * 0.01f;
+            }
+            else
+            {
+                Debug.LogWarning("[HideAndSeek] Sin punto de espera: coloca a mano el circulo del tutorial.");
+            }
+
+            go.SetActive(false);
+            return go.transform;
         }
 
         private static TextMeshProUGUI CreateLabel(Transform parent, string name, Vector2 position,

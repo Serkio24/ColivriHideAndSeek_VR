@@ -7,7 +7,8 @@ namespace Colivri.HideAndSeek
     /// del <see cref="HideAndSeekManager"/> y elige la cancion por su cuenta, sin nada de red.
     ///
     /// En partida (Hiding o Seeking) suena la cancion de juego; en cualquier otro momento
-    /// (sin conectar, esperando jugadores o viendo el resultado) suena la del lobby.
+    /// (sin conectar, esperando jugadores o viendo el resultado) suena la del lobby. Durante la
+    /// cinematica de intro la del lobby sigue, pero baja para no tapar la escena.
     /// </summary>
     public class GameMusic : MonoBehaviour
     {
@@ -20,6 +21,9 @@ namespace Colivri.HideAndSeek
         [SerializeField] private float volume = 0.5f;
         [Tooltip("Segundos que tarda el fundido entre una cancion y la otra.")]
         [SerializeField] private float fadeDuration = 1f;
+        [Tooltip("Fraccion del volumen a la que baja la musica del lobby durante la cinematica.")]
+        [Range(0f, 1f)]
+        [SerializeField] private float introDuck = 0.3f;
 
         private AudioSource _lobbySource;
         private AudioSource _inGameSource;
@@ -55,7 +59,7 @@ namespace Colivri.HideAndSeek
 
             float step = fadeDuration > 0f ? volume * Time.unscaledDeltaTime / fadeDuration : volume;
             Fade(_inGameSource, _inMatch ? volume : 0f, step);
-            Fade(_lobbySource, _inMatch ? 0f : volume, step);
+            Fade(_lobbySource, _inMatch ? 0f : IsInIntro() ? volume * introDuck : volume, step);
         }
 
         private static bool IsInMatch()
@@ -64,6 +68,12 @@ namespace Colivri.HideAndSeek
             if (manager == null || !manager.IsSpawned) return false;
             var state = manager.State.Value;
             return state == GameState.Hiding || state == GameState.Seeking;
+        }
+
+        private static bool IsInIntro()
+        {
+            var manager = HideAndSeekManager.Instance;
+            return manager != null && manager.IsSpawned && manager.State.Value == GameState.Intro;
         }
 
         /// Acerca el volumen al objetivo y para la fuente cuando se ha apagado del todo.
